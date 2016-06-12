@@ -1,0 +1,518 @@
+---
+title: "Practical Machine Learning Project - WLE"
+author: "vicarizmendi"
+date: "6 de junio de 2016"
+output: html_document
+---
+
+### Introduction
+
+This project consists in the production of a suitable classification model to find out if a Weight Lifting athlete is doing a dumbbell exercise right (class A) or wrong in 4 different ways (classes B, C, D & E).
+
+The dataset used to train the model has been provided by:  
+
+"Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013."
+
+Information about the experiment and the measures taken can be seen in:  
+http://groupware.les.inf.puc-rio.br/har#weight_lifting_exercises
+
+Read more: http://groupware.les.inf.puc-rio.br/har#ixzz4B6qSRYws
+
+### Summary
+
+These are the main figures of the datasets:
+
+Training dataset:  19,622 obs x 159 predictors and the outcome 
+
+Testing dataset : 20 obs x 159 predictors, and a problem_id column, no outcome included  
+
+* 6 participants  
+* 5 classes of outcomes 
+* 4 sensors: belt, arm, forearm and dumbbell
+* 13 features collected per sensor (other 25 features have been discarded)
+
+Covariates eliminated due to different reasons:
+
+* Features with all NAs when variable factor new_window="yes". As there are much more exercise observations for new_window="no" and in the testing dataset all the observations have new_window="no", I have decided to simplify the modelling by eliminating from the training dataset all samples with new_window= "yes". (25 features discarded per sensor type)  
+
+* Timestamp - Not relevant for the modelling as they are dates of the exercises, very close.
+
+* Windows information - Not relevant for the modelling 
+
+* X - index of the samples
+
+Using the caret package we perform the following steps:
+
+1. Splitting the pml-train data 60/40 training/testing
+2. Renaming pml-testing to be used as a final validation of the exercise and not to be confused with the testing subset created
+3. Creating the preprocessing object with training data and applying it to training, testing and the validation subsets. We scale, center, eliminate zero and near zero var  predictors.
+4. Eliminating highly correlated features (correlation threshold 0.8), using findCorrelation() function
+5. Using train() function obtain the optimized models fits, from the methods:"rpart" Trees, "qda" Quadratic Discriminant Analysis and "treebag" Bagging. We tried to do it with other methods, as "rf" Random Forest, "gbm" Boosting, "nb" Naive Bayes and "lda" Linear Discriminant Analysis. They were discarded because they were very time consuming, taking into account the tradeoff accuracy/computational time.
+6. Choose the best model by predicting on the testing subset and calculating the accuracy, sensitivity and specificity.
+
+By using the train() function from the caret package, with the default values of trControl parameter, we use as cross validation method "boot" bootstrapping , resampling 25 times the train subset with replacement.
+
+
+The model with better results on the test subset for accuracy, sensitivity and specificity in all the classes A, B, C, D, and E, is "treebag" Bagging. This is the model we will use for the validation subset (pml-testing dataset).
+
+The expected out of sample error for a classification problem is the missclassification error calculated over the testing subset of the pml-training , and on the model selected is XXXXXX. 
+
+### Loading libraries needed
+
+Libraries: caret, rpart, ggplot2 and MASS
+
+```{r echo=FALSE, results='hide',warning=FALSE,message=FALSE}
+## Installing and loading libraries needed
+library(caret)
+library(rpart)
+library(ggplot2)
+library(MASS)
+```
+
+### Loading and cleaning data
+
+We load the pml-training and pml-testing data sets with all fields as "character". The data have been saved in different formats and we need to convert them to the suitable classes after loading them all.
+
+In order to eliminate the big amount of NAs, and after realizing that there are several features with all NAs when filtering new_window="yes", we eliminate all rows  with new_window="yes". There is still a big amount of observations and the pml-testing dataset has all observations with new_window="no".
+
+We also eliminate x, timestamp features and window features, as they are not relevant for the problem and its outcome. The parameters needed are the measures taken from the sensors.
+
+
+```{r echo=FALSE,results='hide',warning=FALSE,cache=TRUE}
+## Loading data
+setwd("~/Advatica 2016/Coursera/8 Practical Machine Learning/Project")
+pml_training<-read.csv2("pml_training.csv",sep = ",",colClasses ="character")
+pml_testing<-read.csv2("pml_testing.csv",sep = "," ,colClasses ="character")
+
+## Classes review:
+
+pml_training[,1]<-as.integer(pml_training[,1])
+pml_training[,2]<-as.factor(pml_training[,2])
+pml_training[,3]<-as.integer(pml_training[,3])
+pml_training[,4]<-as.integer(pml_training[,4])
+pml_training[,5]<-as.Date(pml_training[,5])
+pml_training[,6]<-as.factor(pml_training[,6])
+pml_training[,7]<-as.integer(pml_training[,7])
+for (i in 8:ncol(pml_training)-1) {pml_training[,i]<-as.numeric(pml_training[,i])}
+pml_training[,160]<-as.factor(pml_training[,160])
+
+summary(pml_training)
+str(pml_training)
+head(pml_training)
+
+## The same for testing dataset, except for the outcome that in testing is the problem id, integer
+
+pml_testing[,1]<-as.integer(pml_testing[,1])
+pml_testing[,2]<-as.factor(pml_testing[,2])
+pml_testing[,3]<-as.integer(pml_testing[,3])
+pml_testing[,4]<-as.integer(pml_testing[,4])
+pml_testing[,5]<-as.Date(pml_testing[,5])
+pml_testing[,6]<-as.factor(pml_testing[,6])
+pml_testing[,7]<-as.integer(pml_testing[,7])
+for (i in 8:ncol(pml_testing)-1) {pml_testing[,i]<-as.numeric(pml_testing[,i])}
+pml_testing[,160]<-as.integer((pml_testing[,160]))
+
+summary(pml_testing)
+str(pml_testing)
+head(pml_testing)
+
+## Last column in training is the outcome classe, but in testing is the problem id
+training_names<-colnames(pml_training)
+testing_names<-colnames(pml_testing)
+training_names==testing_names
+
+## Eliminate all samples with New_window=yes. This simplifies the problem a lot. The testing set has no windows=yes, and the dataset is still big enough. most of NAs disappear with this!!!
+
+pml_training_nw<-pml_training[pml_training$new_window=="no",]
+pml_testing_nw<-pml_testing[pml_testing$new_window=="no",]
+
+
+## Eliminate variables not directly related with the outcome, as timestamp, index x, and new and num windows
+
+pml_training_nw$raw_timestamp_part_1<-NULL
+pml_training_nw$raw_timestamp_part_2<-NULL
+pml_training_nw$cvtd_timestamp<-NULL
+pml_training_nw$X<-NULL
+pml_training_nw$new_window<-NULL
+pml_training_nw$num_window<-NULL
+
+pml_testing_nw$raw_timestamp_part_1<-NULL
+pml_testing_nw$raw_timestamp_part_2<-NULL
+pml_testing_nw$cvtd_timestamp<-NULL
+pml_testing_nw$X<-NULL
+pml_testing_nw$new_window<-NULL
+pml_testing_nw$num_window<-NULL
+
+## After eliminating all samples with new window =yes, there are many covariates with all NAs. With a simple loop, all columns without information are eliminated and then no NAs anymore
+
+NA_col<-is.na(pml_training_nw)
+vect<-(apply(NA_col,2,sum))
+vect
+dim(pml_training_nw)
+columnas<-NULL
+for (i in 1:ncol(pml_training_nw)){
+        if (vect[i]!=nrow(pml_training_nw))
+        columnas=c(columnas,names(vect[i]));
+}
+columnas
+pml_training_clean<-pml_training_nw[,columnas]
+dim(pml_training_clean)
+sum(is.na(pml_training_clean))
+
+## testing dataset does not have the classe outcome. Instead it has an id_problem number on column 160. This is a validation test set
+
+pml_testing_nw$problem_id
+
+## eliminating the same columns in testing dataset and check no NAs
+
+columnas[length(columnas)]<-"problem_id"
+sum(is.na(pml_testing))
+pml_testing_clean<-pml_testing_nw[,columnas]
+dim(pml_testing_clean)       
+sum(is.na(pml_testing_clean))
+
+
+## Outcome is classe, This is a classification problem, 5 classes defined, A, B, C, D and E
+str(pml_training_clean$classe)
+summary(pml_training_clean$classe)
+
+```
+
+We eliminate the covariates with alls NAs.
+
+The subsets resulting of this cleaning up are:
+
+pml_training_clean, with `r nrow(pml_training_clean)` observations and `r ncol(pml_training_clean)` features with `r sum(is.na(pml_training_clean))` NAs
+
+pml_testing_clean, with `r nrow(pml_testing_clean)` observations and `r ncol(pml_testing_clean)` features with `r sum(is.na(pml_testing_clean))` NAs
+
+
+
+
+
+### Splitting and preprocessing training data
+
+We are going to create from training data two subsets, training and testing, and finally we are going to use the original testing set as the final validation set.
+
+We are going to split the original training data using 60% new training set and 40% new test set, and rename the original test set as validation set
+
+The only preprocessing done is the centering and scaling of numerical variables. We create the PreObj and apply it to training set, testing set and validation set. This last we are not sure it is needed but just in case.
+
+
+```{r echo=FALSE,cache=TRUE,results='hide'}
+
+## Preprocessing training subset, centering and scaling the numeric variables
+
+## Defining n= number of rows in original training set, and p= number of predictors in inicial set
+
+p=ncol(pml_training_clean)-1;p
+n=nrow(pml_training_clean);n
+
+## Setting seed for reproducibility purposes
+set.seed(98765)
+
+## Splitting dataset into training and testing
+inTrain <- createDataPartition(y=pml_training_clean$classe,
+p=0.60, list=FALSE)
+training <- pml_training_clean[inTrain,]
+testing <- pml_training_clean[-inTrain,]
+dim(training)
+dim(testing)
+
+
+## rename pml_testing_clean to validation to avoid mistakes
+validation<-pml_testing_clean
+
+## Preprocess
+preObj<-preProcess(training, method = c("center", "scale","zv","nzv"))
+trainingPrep<-predict(preObj,training[,-54])
+trainingPrep$classe<-training$classe
+dim(trainingPrep)
+
+## Preprocessing testing set with same preObj that for training set
+
+testingPrep<-predict(preObj,testing[,-54])
+testingPrep$classe<-testing$classe
+
+
+## Preprocessing validation set with same preObj that for training set. CHECK IF THIS IS NEEDED!!!
+sum(is.na(validation))
+validationPrep<-predict(preObj,validation[,-54])
+validationPrep$problem_id<-validation$problem_id
+
+
+```
+
+
+
+### Cross-Validation
+
+Approach: 
+
+1.  Use the training set
+2.  Split it into training/test sets
+3.  Build a model on the training set
+4.  Evaluate on the test set
+5.  Repeat and average the estimated errors
+
+Used for picking the type of prediction function to use.
+
+By using the train() function from the caret package, with the default values of trControl parameter, we use as cross validation method "boot" bootstrapping , resampling 25 times the train subset with replacement.
+
+
+### On the training set pick up the features
+
+
+Eliminate highly correlated covariates using the findCorrelation() function from caret package,
+
+In this case, with cutoff=0.8, we have to eliminate:
+
+
+```{r echo=FALSE,results='hide', warning=FALSE, message=FALSE}
+
+library(mlbench)
+
+correlationMatrix <- cor(trainingPrep[2:53])
+print(correlationMatrix)
+
+highlyCorrelated <-findCorrelation(correlationMatrix, cutoff=0.8)
+print(highlyCorrelated)
+highlyCorrelated<-highlyCorrelated+1 ## correcting the column numbers
+
+## Eliminate the covariates in trainingPrep, testingPrep ¿¿¿ and eventualy in validationPrep???
+
+trainingPrep<-trainingPrep[,-highlyCorrelated]
+testingPrep<-testingPrep[,-highlyCorrelated]
+validationPrep<-validationPrep[,-highlyCorrelated]
+
+```
+
+
+
+
+ `r print(findCorrelation(correlationMatrix, cutoff=0.8,names = TRUE))`
+
+
+### Training different models
+
+#### Accuracy tradeoffs:
+
+* Interpretability versus accuracy
+* Speed versus accuracy
+* Simplicity versus accuracy
+* Scalability versus accuracy
+
+In this case the interpretability has less importance than the speed, simplicity and scalability.
+
+
+```{r echo=FALSE,results='hide',warning=FALSE, message=FALSE}
+## Fitting models 
+## Fit 1 - "rpart" Trees
+modelFit1 <- train(trainingPrep$classe ~.,
+                 method="rpart",
+                  data=trainingPrep)
+print(modelFit1$finalModel)
+
+confmat1<-confusionMatrix(testingPrep$classe,predict(modelFit1,newdata=testingPrep));
+
+Accur1<-confmat1$overall["Accuracy"];Accur1
+Kappa1<-confmat1$overall["Kappa"];Kappa1
+
+
+## Fit 2 - "treebag" Bagging
+modelFit2 <- train(trainingPrep$classe ~.,
+                 method="treebag",
+                  data=trainingPrep)
+print(modelFit2$finalModel)
+
+confmat2<-confusionMatrix(testingPrep$classe,predict(modelFit2,newdata=testingPrep))
+
+Accur2<-confmat2$overall["Accuracy"];Accur2
+Kappa2<-confmat2$overall["Kappa"];Kappa2
+
+
+## Fit 3 - "rf" Random Forest  - NOT USED VERY TIME CONSUMING!!!!
+# modelFit3 <- train(trainingPrep$classe ~.,
+#                  method="rf",
+#                   data=trainingPrep)
+# print(modelFit3$finalModel)
+# 
+# confmat3<-confusionMatrix(testingPrep$classe,predict(modelFit3,newdata=testingPrep))
+# 
+# Accur3<-confmat3$overall["Accuracy"]
+# Kappa3<-confmat3$overall["Kappa"]
+
+## Fit 4 - "gbm" Boosting  - NOT USED VERY TIME CONSUMING!!!!
+# modelFit4 <- train(trainingPrep$classe ~.,
+#                  method="gbm",
+#                  data=trainingPrep,
+#                  verbose=FALSE
+#                  )
+# print(modelFit4$finalModel)
+# 
+# confmat4<-confusionMatrix(testingPrep$classe,predict(modelFit4,newdata=testingPrep))
+# 
+# Accur4<-confmat4$overall["Accuracy"]
+# Kappa4<-confmat4$overall["Kappa"]
+
+## Fit 5 - Model based prediction "nb" or "lda"
+# modelFit_nb <- train(trainingPrep$classe ~.,
+#                  method="nb",
+#                  data=trainingPrep
+#                  )
+# print(modelFit_nb$finalModel)
+# 
+# confmat_nb<-confusionMatrix(testingPrep$classe,predict(modelFit_nb,newdata=testingPrep))
+# Accur_nb<-confmat_nb$overall["Accuracy"]
+# Kappa_nb<-confmat_nb$overall["Kappa"]
+# 
+# modelFit_lda <- train(trainingPrep$classe ~.,
+#                  method="lda",
+#                  data=trainingPrep
+#                  )
+# print(modelFit_lda$finalModel)
+# 
+# confmat_lda<-confusionMatrix(testingPrep$classe,predict(modelFit_lda,newdata=testingPrep))
+# Accur_lda<-confmat_lda$overall["Accuracy"]
+# Kappa_lda<-confmat_lda$overall["Kappa"]
+
+
+# table(predict(modelFit_lda,newdata=testingPrep),modelFit_nb,newdata=testingPrep)
+
+## Fit 6 - Model based prediction "qda"
+
+modelFit_qda <- train(trainingPrep$classe ~.,
+                 method="qda",
+                 data=trainingPrep
+                 )
+print(modelFit_qda$finalModel)
+
+confmat_qda<-confusionMatrix(testingPrep$classe,predict(modelFit_qda,newdata=testingPrep))
+Accur_qda<-confmat_qda$overall["Accuracy"];Accur_qda
+Kappa_qda<-confmat_qda$overall["Kappa"];Kappa_qda
+
+
+```
+
+#### Define error rate
+
+As this is a classification problem we choose to calculate:
+
+* Accuracy
+* Sensitivity
+* Specificity
+* Positive Predictive Value
+* Negative Predictive Value
+
+In order to compare models we have to get the first three figures higher.  
+
+We want to identify the cases where the quality of the exercise is bad for correcting it. The classe A is the correct one and there are 4 classes wrong. We also want to identify the error committed by the athlete during the exercise, so we want sentitivity and specificity high for all 5 classes.
+
+The error rate will be the misclassification error.
+
+
+#### On the training set pick prediction function
+
+We train the following models:
+
+* "rpart" tree
+* "qda" Quadratic Discriminant Analysis
+* "treebag" Bagging
+
+We intend to do it as well for the following, discarding them mainly because of the high calculation time.
+
+* "lda" Linear Discriminant Analysis
+* "rf" Random forest
+* "gbm" Boosting
+* "nb" Naive Bayes
+
+We predict the classes on the testing subset and calculate the confussion matrix and main statistics:
+
+Results for "rpart":  
+
+```{r echo=FALSE}
+confmat1
+```
+
+and the misclassification error:  
+
+
+```{r echo=FALSE}
+Mis_err<-(1-unname(Accur1))
+Mis_err
+```
+
+
+Results for "qda":  
+
+
+```{r echo=FALSE}
+confmat_qda
+
+```
+
+and the misclassification error:  
+
+
+```{r echo=FALSE}
+
+Mis_err<-(1-unname(Accur_qda))
+Mis_err
+```
+
+
+Results for "treebag":  
+
+
+```{r echo=FALSE}
+confmat2
+
+```
+
+and the misclassification error:  
+
+
+```{r echo=FALSE}
+
+Mis_err<-(1-unname(Accur2))
+Mis_err
+```
+  
+  
+When comparing them we see that the best of them is "treebag" bagging and the statistics are really good. In this case the expected test misclassification error is aproximately 1.6%, compared with the 9.8% in "qda" and 50% in "rpart".
+  
+  
+#### Predict the classes on the validation set (pml-training)
+  
+  
+```{r echo=FALSE}
+Pred_Val_treebag<- predict(modelFit2,newdata=validationPrep)
+results<-t(data.frame(Pred_Val_treebag))
+print(results)
+```
+  
+  
+#### Conclusion
+  
+After cheching with the project quiz....
+  
+  
+  
+#### Some exploratory graphics
+  
+  
+```{r echo=FALSE}
+
+## Some exploratory data analysis on preprocessed datasets
+## str(trainingPrep)
+## colnames(trainingPrep)
+
+table(trainingPrep$user_name,trainingPrep$classe)
+p<-ncol(trainingPrep)
+pairs(trainingPrep[,c(1:9,p)])
+pairs(trainingPrep[,c(10:18,p)])
+pairs(trainingPrep[,c(19:27,p)])
+pairs(trainingPrep[,c(28:36,p)])
+pairs(trainingPrep[,c(37:43,p)])
+```
+
